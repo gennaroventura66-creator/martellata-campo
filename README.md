@@ -6,11 +6,13 @@ App per la **martellata e la matricinatura dei cedui** (Basilicata, Campania, Ca
 - **Android (APK):** https://github.com/gennaroventura66-creator/martellata-campo/releases/latest/download/Martellata-Campo.apk
 
 ## Cosa fa
+- **Due sezioni: Alto fusto e Ceduo.** Alto fusto → piedilista di martellata e provvigione con percentuale di prelievo; Ceduo → piedilista di matricinatura (matricine numerate per specie ed età) e stima della massa ritraibile.
+- **Aree di saggio** di superficie conforme alla norma regionale (Calabria 400 m², max 1256,6 m²; Basilicata ceduo 500 m²; altri valori in Altro → Norme regionali): centro GPS, raggio corretto per la pendenza, conteggio a tocco per specie e classe diametrica (polloni, matricine, ceppaie / piante), valori a ettaro ed errore di stima (t di Student, P 95%).
 - Lotti di taglio con aree (confine, sezioni, aree escluse) disegnate in QGIS o in app.
 - Registrazione rapida delle piante: numero progressivo per operatore, specie, diametro, altezza, destinazione (taglio / matricina / confine), età della matricina, stato; tastierino e dettatura ("CA24 CE31 h18").
 - Cubatura albero per albero: equazioni INFC 2005 per 71 specie di latifoglie e conifere, curve ipsometriche dai campioni, **tavole del PAF** (una entrata, doppia entrata, coefficienti).
 - Verifiche normative (Calabria R.R. 4/2024: turni, matricine/ha, matricine ≥ 2T, tagliata massima, periodo). Per Basilicata e Campania i valori si inseriscono in Altro → Norme regionali.
-- Stampe: piedilista di martellata e di matricinatura (PDF), verbale (PDF / Word), relazione di stima (Word), fascicolo completo con carta, Excel, CSV.
+- Stampe: piedilista di martellata e di matricinatura, piedilista delle aree di saggio, stima della massa ritraibile / provvigione e prelievo (PDF), verbale (PDF / Word), relazione di stima (Word), fascicolo completo con carta, Excel, CSV.
 - Scambio con QGIS tramite `martellata.gpkg` + `Martellata.qgz`; sincronizzazione QFieldCloud a più operatori (unione a tre vie) nell'app Android.
 
 ## Partire da QGIS
