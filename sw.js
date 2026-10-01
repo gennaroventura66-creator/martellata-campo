@@ -1,5 +1,5 @@
 /* Martellata Campo – service worker: app e librerie in cache, tile della mappa in cache mentre le guardi */
-const CACHE = 'martellata-campo-v1.1.2';
+const CACHE = 'martellata-campo-v1.2.0';
 const TILES = 'mc-tiles';
 const CDN = 'https://cdn.jsdelivr.net/npm/';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './Martellata.qgz', './Martellata_QGIS.zip'];
