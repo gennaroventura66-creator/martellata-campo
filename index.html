@@ -182,7 +182,7 @@ table.pl tr{cursor:pointer}
    Martellata Campo — dati: specie, tavole di cubatura INFC, norme regionali
    Tutto modificabile nell'app (Altro → Specie e tavole, Norme).
    ============================================================ */
-const APP_VER = '1.2.0';
+const APP_VER = '1.3.0';
 const APP_NAME = 'Martellata Campo';
 
 /* Equazioni INFC 2005 (Tabacchi et al., 2011): volume fusto e rami grossi v [dm³] = b1 + b2·d²·h (+ b3·d);
@@ -2466,6 +2466,263 @@ Object.assign(A, {
 });
 
 /* ============================================================
+   Grafici per i report (canvas → PNG). Modulo comune a PAF Campo e Martellata Campo.
+   Ogni funzione restituisce {png: Uint8Array, url: dataURL, w, h} (dimensioni in px a 2x per la stampa).
+   ============================================================ */
+const GR_COL = ['#2f6b2a', '#c98a1f', '#3b6fb6', '#b5443b', '#7a5c9e', '#2a9d8f', '#8c8c3b', '#d4765a', '#5b7f95', '#9b6b3c'];
+const grNum = (v, d = 0) => (v == null || v === '' || isNaN(v)) ? '' : Number(v).toLocaleString('it-IT', {minimumFractionDigits: d, maximumFractionDigits: d});
+function grNice(max) { // limite superiore "bello" dell'asse
+  if (!(max > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(max))); const m = max / p;
+  const n = m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10;
+  return n * p;
+}
+function grCanvas(w, h) {
+  const cv = document.createElement('canvas'); cv.width = w * 2; cv.height = h * 2;
+  const c = cv.getContext('2d'); c.scale(2, 2); c.fillStyle = '#fff'; c.fillRect(0, 0, w, h);
+  c.font = '12px Arial, Helvetica, sans-serif'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+  return {cv, c};
+}
+function grOut(cv) {
+  const url = cv.toDataURL('image/png'); const b = atob(url.split(',')[1]); const u8 = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) u8[i] = b.charCodeAt(i);
+  return {png: u8, url, w: cv.width / 2, h: cv.height / 2};
+}
+function grWrap(c, text, maxW) {
+  const words = String(text).split(/\s+/); const lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (c.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; }
+  if (cur) lines.push(cur); return lines;
+}
+function grLegend(c, series, x, y, maxW) { // legenda orizzontale a capo; restituisce l'altezza usata
+  c.font = '11px Arial, Helvetica, sans-serif'; let cx = x, cy = y; const lh = 16;
+  series.forEach((s, i) => {
+    const w = 14 + c.measureText(s.name).width + 12;
+    if (cx + w > x + maxW && cx > x) { cx = x; cy += lh; }
+    c.fillStyle = s.color || GR_COL[i % GR_COL.length]; c.fillRect(cx, cy - 5, 10, 10);
+    c.fillStyle = '#222'; c.textAlign = 'left'; c.fillText(s.name, cx + 14, cy); cx += w;
+  });
+  return cy - y + lh;
+}
+
+/* Barre: labels = categorie sull'asse x; series = [{name, values, color}]; opt = {title, xLabel, yLabel, stacked, w, h, dec, values:true} */
+function chartBars(labels, series, opt = {}) {
+  const W = opt.w || 640, H = opt.h || 360; const {cv, c} = grCanvas(W, H);
+  const multi = series.length > 1; const stacked = !!opt.stacked;
+  let top = 10;
+  if (opt.title) { c.font = 'bold 14px Arial, Helvetica, sans-serif'; c.fillStyle = '#1b1b1b'; c.textAlign = 'center'; c.fillText(opt.title, W / 2, top + 8); top += 26; }
+  if (multi || opt.legend) top += grLegend(c, series, 60, top + 6, W - 80) + 2;
+  const L = 58, R = 16, B = opt.xLabel ? 52 : 36; const pw = W - L - R, ph = H - top - B;
+  const n = labels.length; const vals = stacked ? labels.map((_, i) => series.reduce((s, q) => s + (+q.values[i] || 0), 0)) : series.flatMap(q => q.values.map(v => +v || 0));
+  const max = grNice(Math.max(0, ...vals) * 1.05); const dec = opt.dec ?? 0;
+  // griglia e asse y
+  c.strokeStyle = '#e3e3e3'; c.lineWidth = 1; c.fillStyle = '#444'; c.font = '11px Arial, Helvetica, sans-serif'; c.textAlign = 'right';
+  const ticks = 5;
+  for (let i = 0; i <= ticks; i++) { const v = max / ticks * i; const y = top + ph - v / max * ph; c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke(); c.fillText(grNum(v, max < 10 ? 1 : 0), L - 6, y); }
+  c.strokeStyle = '#888'; c.beginPath(); c.moveTo(L, top); c.lineTo(L, top + ph); c.lineTo(L + pw, top + ph); c.stroke();
+  // barre
+  const gw = pw / Math.max(1, n); const inner = Math.min(gw * 0.72, 90 * Math.max(1, stacked ? 1 : series.length)); const bw = (multi && !stacked) ? inner / series.length : inner;
+  labels.forEach((lab, i) => {
+    const x0 = L + i * gw + (gw - inner) / 2; let acc = 0;
+    series.forEach((s, j) => {
+      const v = +s.values[i] || 0; if (!v && !stacked) return;
+      const h = v / max * ph; c.fillStyle = s.color || GR_COL[j % GR_COL.length];
+      if (stacked) { c.fillRect(x0, top + ph - (acc + v) / max * ph, inner, h); acc += v; }
+      else { const x = x0 + j * bw; c.fillRect(x, top + ph - h, bw - (multi ? 1 : 0), h);
+        if (opt.values && n * series.length <= 24) { c.fillStyle = '#333'; c.font = '10px Arial, Helvetica, sans-serif'; c.textAlign = 'center'; c.fillText(grNum(v, dec), x + bw / 2, top + ph - h - 7); } }
+    });
+    if (stacked && opt.values && n <= 30 && acc) { c.fillStyle = '#333'; c.font = '10px Arial, Helvetica, sans-serif'; c.textAlign = 'center'; c.fillText(grNum(acc, dec), x0 + inner / 2, top + ph - acc / max * ph - 7); }
+    // etichetta x
+    c.fillStyle = '#333'; c.font = '11px Arial, Helvetica, sans-serif'; c.textAlign = 'center';
+    const step = n > 24 ? 3 : n > 14 ? 2 : 1;
+    if (i % step === 0) { const ls = grWrap(c, lab, gw * step - 2).slice(0, 2); ls.forEach((t, k) => c.fillText(t, x0 + inner / 2, top + ph + 12 + k * 13)); }
+  });
+  c.fillStyle = '#333'; c.font = '11px Arial, Helvetica, sans-serif';
+  if (opt.xLabel) { c.textAlign = 'center'; c.fillText(opt.xLabel, L + pw / 2, H - 10); }
+  if (opt.yLabel) { c.save(); c.translate(14, top + ph / 2); c.rotate(-Math.PI / 2); c.textAlign = 'center'; c.fillText(opt.yLabel, 0, 0); c.restore(); }
+  return grOut(cv);
+}
+
+/* Torta/anello: items = [{name, value, color}]; opt = {title, w, h, unit, dec} */
+function chartPie(items, opt = {}) {
+  const W = opt.w || 520, H = opt.h || 320; const {cv, c} = grCanvas(W, H);
+  let top = 8; if (opt.title) { c.font = 'bold 14px Arial, Helvetica, sans-serif'; c.fillStyle = '#1b1b1b'; c.textAlign = 'center'; c.fillText(opt.title, W / 2, top + 8); top += 28; }
+  const data = items.filter(x => +x.value > 0).sort((a, b) => b.value - a.value); const tot = data.reduce((s, x) => s + +x.value, 0);
+  const r = Math.min((H - top - 16) / 2, W * 0.26); const cx = r + 24, cy = top + (H - top) / 2;
+  let a = -Math.PI / 2;
+  data.forEach((d, i) => {
+    const ang = d.value / tot * 2 * Math.PI; c.beginPath(); c.moveTo(cx, cy); c.arc(cx, cy, r, a, a + ang); c.closePath();
+    c.fillStyle = d.color || GR_COL[i % GR_COL.length]; c.fill(); c.strokeStyle = '#fff'; c.lineWidth = 1.5; c.stroke();
+    if (ang > 0.25) { const m = a + ang / 2; c.fillStyle = '#fff'; c.font = 'bold 11px Arial, Helvetica, sans-serif'; c.textAlign = 'center'; c.fillText(grNum(d.value / tot * 100, 0) + '%', cx + Math.cos(m) * r * 0.62, cy + Math.sin(m) * r * 0.62); }
+    a += ang;
+  });
+  // legenda a destra con valori
+  const lx = cx + r + 26; let ly = top + 14; c.font = '11px Arial, Helvetica, sans-serif'; c.textAlign = 'left';
+  data.slice(0, 12).forEach((d, i) => {
+    c.fillStyle = d.color || GR_COL[i % GR_COL.length]; c.fillRect(lx, ly - 5, 10, 10); c.fillStyle = '#222';
+    const t = `${d.name}  ${grNum(d.value, opt.dec ?? 1)}${opt.unit ? ' ' + opt.unit : ''} (${grNum(d.value / tot * 100, 0)}%)`;
+    c.fillText(grWrap(c, t, W - lx - 10)[0], lx + 14, ly); ly += 17;
+  });
+  return grOut(cv);
+}
+
+/* Linee: x = valori numerici o etichette; series = [{name, values, color}]; opt = {title, xLabel, yLabel, points} */
+function chartLines(xs, series, opt = {}) {
+  const W = opt.w || 640, H = opt.h || 340; const {cv, c} = grCanvas(W, H);
+  let top = 10; if (opt.title) { c.font = 'bold 14px Arial, Helvetica, sans-serif'; c.fillStyle = '#1b1b1b'; c.textAlign = 'center'; c.fillText(opt.title, W / 2, top + 8); top += 26; }
+  if (series.length > 1) top += grLegend(c, series, 60, top + 6, W - 80) + 2;
+  const L = 58, R = 16, B = opt.xLabel ? 52 : 36; const pw = W - L - R, ph = H - top - B;
+  const max = grNice(Math.max(0, ...series.flatMap(s => s.values.map(v => +v || 0))) * 1.05);
+  const numeric = xs.every(x => !isNaN(+x)); const xmin = numeric ? Math.min(...xs.map(Number)) : 0, xmax = numeric ? Math.max(...xs.map(Number)) : xs.length - 1;
+  const X = i => L + (numeric ? (xs[i] - xmin) / ((xmax - xmin) || 1) : i / Math.max(1, xs.length - 1)) * pw;
+  c.strokeStyle = '#e3e3e3'; c.lineWidth = 1; c.fillStyle = '#444'; c.font = '11px Arial, Helvetica, sans-serif'; c.textAlign = 'right';
+  for (let i = 0; i <= 5; i++) { const v = max / 5 * i; const y = top + ph - v / max * ph; c.beginPath(); c.moveTo(L, y); c.lineTo(L + pw, y); c.stroke(); c.fillText(grNum(v, max < 10 ? 1 : 0), L - 6, y); }
+  c.strokeStyle = '#888'; c.beginPath(); c.moveTo(L, top); c.lineTo(L, top + ph); c.lineTo(L + pw, top + ph); c.stroke();
+  c.textAlign = 'center'; c.fillStyle = '#333'; const step = xs.length > 14 ? Math.ceil(xs.length / 10) : 1;
+  xs.forEach((x, i) => { if (i % step === 0) c.fillText(String(x), X(i), top + ph + 12); });
+  series.forEach((s, j) => {
+    const col = s.color || GR_COL[j % GR_COL.length]; c.strokeStyle = col; c.fillStyle = col; c.lineWidth = 2; c.beginPath();
+    s.values.forEach((v, i) => { const y = top + ph - (+v || 0) / max * ph; i ? c.lineTo(X(i), y) : c.moveTo(X(i), y); }); c.stroke();
+    if (opt.points !== false) s.values.forEach((v, i) => { c.beginPath(); c.arc(X(i), top + ph - (+v || 0) / max * ph, 3, 0, 7); c.fill(); });
+  });
+  c.fillStyle = '#333'; c.font = '11px Arial, Helvetica, sans-serif';
+  if (opt.xLabel) { c.textAlign = 'center'; c.fillText(opt.xLabel, L + pw / 2, H - 10); }
+  if (opt.yLabel) { c.save(); c.translate(14, top + ph / 2); c.rotate(-Math.PI / 2); c.textAlign = 'center'; c.fillText(opt.yLabel, 0, 0); c.restore(); }
+  return grOut(cv);
+}
+
+/* Barre orizzontali con intervallo di errore: items = [{name, value, err}]; opt = {title, xLabel, unit} */
+function chartErrBars(items, opt = {}) {
+  const W = opt.w || 640, H = opt.h || Math.max(160, 60 + items.length * 26); const {cv, c} = grCanvas(W, H);
+  let top = 10; if (opt.title) { c.font = 'bold 14px Arial, Helvetica, sans-serif'; c.fillStyle = '#1b1b1b'; c.textAlign = 'center'; c.fillText(opt.title, W / 2, top + 8); top += 26; }
+  const L = 110, R = 24, B = 34; const pw = W - L - R, ph = H - top - B; const rh = ph / Math.max(1, items.length);
+  const max = grNice(Math.max(0, ...items.map(x => (+x.value || 0) + (+x.err || 0))) * 1.05);
+  c.strokeStyle = '#e3e3e3'; c.lineWidth = 1; c.fillStyle = '#444'; c.font = '11px Arial, Helvetica, sans-serif'; c.textAlign = 'center';
+  for (let i = 0; i <= 5; i++) { const v = max / 5 * i; const x = L + v / max * pw; c.beginPath(); c.moveTo(x, top); c.lineTo(x, top + ph); c.stroke(); c.fillText(grNum(v, max < 10 ? 1 : 0), x, top + ph + 12); }
+  items.forEach((it, i) => {
+    const y = top + i * rh + rh * 0.15, h = rh * 0.7; const v = +it.value || 0, e = +it.err || 0;
+    c.fillStyle = it.color || GR_COL[0]; c.fillRect(L, y, v / max * pw, h);
+    if (e) { c.strokeStyle = '#222'; c.lineWidth = 1.5; const x1 = L + Math.max(0, v - e) / max * pw, x2 = L + (v + e) / max * pw, ym = y + h / 2; c.beginPath(); c.moveTo(x1, ym); c.lineTo(x2, ym); c.moveTo(x1, ym - 4); c.lineTo(x1, ym + 4); c.moveTo(x2, ym - 4); c.lineTo(x2, ym + 4); c.stroke(); }
+    c.fillStyle = '#222'; c.textAlign = 'right'; c.font = '11px Arial, Helvetica, sans-serif'; c.fillText(grWrap(c, it.name, L - 12)[0], L - 6, y + h / 2);
+    c.textAlign = 'left'; c.font = '10px Arial, Helvetica, sans-serif'; c.fillText(grNum(v, opt.dec ?? 0) + (e ? ' ± ' + grNum(e, opt.dec ?? 0) : ''), L + (v + e) / max * pw + 5, y + h / 2);
+  });
+  c.strokeStyle = '#888'; c.beginPath(); c.moveTo(L, top); c.lineTo(L, top + ph); c.stroke();
+  if (opt.xLabel) { c.fillStyle = '#333'; c.textAlign = 'center'; c.font = '11px Arial, Helvetica, sans-serif'; c.fillText(opt.xLabel, L + pw / 2, H - 6); }
+  return grOut(cv);
+}
+
+/* ============================================================
+   Generatore di documenti comune (Word .docx e PDF) a partire da una lista di blocchi.
+   Blocchi: {t:'title', lines:[{text,size,b}]} · {t:'h', lvl, text} · {t:'p', text, b, i, small, center}
+            {t:'kv', rows:[[k,v],...], cols:2|4} · {t:'table', head, rows, foot, caption, small, align:[..]}
+            {t:'img', url, w, h, caption, width (mm)} · {t:'photos', items:[{url, cap, w, h}], cols}
+            {t:'br'} · {t:'hr'}
+   Usa docx@8 (Word) e jspdf@2 + autotable (PDF): caricati al momento.
+   ============================================================ */
+const DG = {
+  mm: 210, margin: 18, font: 'Calibri', color: '2f6b2a', line: '9AA58F',
+  async docx(blocks, meta = {}) {
+    await loadScript(libUrl('docx@8.5.0/build/index.umd.js')); const D = window.docx;
+    const PT = 2; const F = DG.font; const C = []; const pw = DG.mm - 2 * DG.margin;
+    const run = (text, o = {}) => new D.TextRun({text: String(text ?? ''), bold: o.b, italics: o.i, size: (o.size || 11) * PT, font: F, color: o.color});
+    const par = (text, o = {}) => new D.Paragraph({children: [run(text, o)], alignment: o.center ? D.AlignmentType.CENTER : o.right ? D.AlignmentType.RIGHT : D.AlignmentType.LEFT, spacing: {after: o.after ?? 100, before: o.before ?? 0}, keepNext: o.keepNext});
+    const border = {style: D.BorderStyle.SINGLE, size: 4, color: DG.line};
+    const borders = {top: border, bottom: border, left: border, right: border};
+    const cell = (t, o = {}) => new D.TableCell({children: [new D.Paragraph({children: [run(t, {b: o.b, size: o.size || 9})], alignment: o.right ? D.AlignmentType.RIGHT : D.AlignmentType.LEFT})], shading: o.head ? {fill: 'E8EFE3'} : o.tot ? {fill: 'F4F4F4'} : undefined, borders, width: o.w ? {size: o.w, type: D.WidthType.PERCENTAGE} : undefined, verticalAlign: D.VerticalAlign.CENTER, margins: {top: 40, bottom: 40, left: 70, right: 70}});
+    const isNum = v => typeof v === 'number' || /^-?[\d.]+(,\d+)?( ?%)?$/.test(String(v ?? '').trim());
+    const table = (head, rows, foot, o = {}) => new D.Table({width: {size: 100, type: D.WidthType.PERCENTAGE},
+      rows: [new D.TableRow({tableHeader: true, cantSplit: true, children: head.map(h => cell(h, {b: true, head: true, size: o.small ? 8 : 9}))}),
+        ...rows.map(r => new D.TableRow({cantSplit: true, children: r.map((v, i) => cell(v, {right: i > 0 && isNum(v), size: o.small ? 8 : 9}))})),
+        ...(foot ? [new D.TableRow({cantSplit: true, children: foot.map((v, i) => cell(v, {b: true, tot: true, right: i > 0 && isNum(v), size: o.small ? 8 : 9}))})] : [])]});
+    const img = (b, wmm) => { const w = Math.min(wmm || b.width || pw, pw); const h = w * b.h / b.w; return new D.ImageRun({data: b.png || b64ToU8(b.url.split(',')[1]), transformation: {width: w * 3.78, height: h * 3.78}}); };
+    for (const b of blocks) {
+      if (b.t === 'title') { C.push(new D.Paragraph({spacing: {before: 2000}})); b.lines.forEach(l => C.push(par(l.text, {b: l.b, size: l.size || 14, center: true, after: l.after ?? 200}))); C.push(new D.Paragraph({children: [new D.PageBreak()]})); }
+      else if (b.t === 'h') C.push(new D.Paragraph({children: [run(b.text, {b: true, size: b.lvl === 1 ? 16 : b.lvl === 2 ? 13 : 11, color: b.lvl <= 2 ? DG.color : undefined})], heading: b.lvl === 1 ? D.HeadingLevel.HEADING_1 : b.lvl === 2 ? D.HeadingLevel.HEADING_2 : D.HeadingLevel.HEADING_3, spacing: {before: b.lvl === 1 ? 300 : 200, after: 120}, keepNext: true, pageBreakBefore: !!b.pageBreak}));
+      else if (b.t === 'p') String(b.text ?? '').split(/\n\s*\n/).forEach(t => C.push(par(t, {b: b.b, i: b.i, size: b.small ? 9 : 11, center: b.center, after: b.small ? 60 : 120})));
+      else if (b.t === 'kv') {
+        const cols = b.cols || 2; const n = Math.ceil(b.rows.length / (cols / 2)); const trs = [];
+        for (let i = 0; i < n; i++) { const cs = []; for (let k = 0; k < cols / 2; k++) { const r = b.rows[i + k * n]; cs.push(cell(r ? r[0] : '', {b: true, head: true, w: 100 / cols * 0.8}), cell(r ? r[1] : '', {w: 100 / cols * 1.2})); } trs.push(new D.TableRow({cantSplit: true, children: cs})); }
+        C.push(new D.Table({width: {size: 100, type: D.WidthType.PERCENTAGE}, rows: trs})); C.push(par('', {after: 80}));
+      }
+      else if (b.t === 'table') { C.push(table(b.head, b.rows, b.foot, b)); if (b.caption) C.push(par(b.caption, {i: true, size: 9, before: 60, after: 160})); else C.push(par('', {after: 80})); }
+      else if (b.t === 'img') { C.push(new D.Paragraph({children: [img(b, b.width)], alignment: D.AlignmentType.CENTER, keepNext: true, spacing: {before: 80}})); if (b.caption) C.push(par(b.caption, {i: true, size: 9, center: true, after: 160})); }
+      else if (b.t === 'photos') {
+        const cols = b.cols || 2; const wmm = (pw - 4 * (cols - 1)) / cols; const trs = [];
+        for (let i = 0; i < b.items.length; i += cols) {
+          const row = b.items.slice(i, i + cols);
+          trs.push(new D.TableRow({cantSplit: true, children: Array.from({length: cols}, (_, k) => { const it = row[k]; const ch = it ? [new D.Paragraph({children: [img(Object.assign({}, it, {w: it.w || 4, h: it.h || 3}), wmm)], alignment: D.AlignmentType.CENTER}), par(it.cap || '', {size: 8, center: true, after: 120})] : [new D.Paragraph('')]; return new D.TableCell({children: ch, width: {size: 100 / cols, type: D.WidthType.PERCENTAGE}, borders: {top: {style: D.BorderStyle.NONE}, bottom: {style: D.BorderStyle.NONE}, left: {style: D.BorderStyle.NONE}, right: {style: D.BorderStyle.NONE}}}); })}));
+        }
+        C.push(new D.Table({width: {size: 100, type: D.WidthType.PERCENTAGE}, rows: trs}));
+      }
+      else if (b.t === 'br') C.push(new D.Paragraph({children: [new D.PageBreak()]}));
+      else if (b.t === 'hr') C.push(new D.Paragraph({border: {bottom: {style: D.BorderStyle.SINGLE, size: 6, color: DG.line}}, spacing: {after: 120}}));
+      else if (b.t === 'toc') { C.push(new D.TableOfContents('Indice', {hyperlink: true, headingStyleRange: '1-2'})); C.push(new D.Paragraph({children: [new D.PageBreak()]})); }
+    }
+    const foot = meta.footer ? new D.Footer({children: [new D.Paragraph({children: [run(meta.footer + ' – pag. ', {size: 8, color: '666666'}), new D.TextRun({children: [D.PageNumber.CURRENT], size: 16, font: F, color: '666666'})], alignment: D.AlignmentType.CENTER})]}) : undefined;
+    const doc = new D.Document({creator: meta.creator || 'Martellata Campo', title: meta.title || '', styles: {default: {document: {run: {font: F, size: 22}}}, paragraphStyles: [
+      {id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: {size: 32, bold: true, font: F, color: DG.color}, paragraph: {spacing: {before: 300, after: 120}}},
+      {id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: {size: 26, bold: true, font: F, color: DG.color}, paragraph: {spacing: {before: 200, after: 100}}},
+      {id: 'Heading3', name: 'Heading 3', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: {size: 22, bold: true, font: F}, paragraph: {spacing: {before: 160, after: 80}}}]},
+      sections: [{properties: {page: {margin: {top: 1000, right: DG.margin * 56.7, bottom: 1000, left: DG.margin * 56.7}}}, footers: foot ? {default: foot} : undefined, children: C}]});
+    return D.Packer.toBlob(doc);
+  },
+
+  async pdf(blocks, meta = {}) {
+    await loadScript(libUrl('jspdf@2.5.1/dist/jspdf.umd.min.js'));
+    await loadScript(libUrl('jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js'));
+    const J = window.jspdf.jsPDF; const doc = new J({unit: 'mm', format: 'a4', compress: true});
+    const W = DG.mm, H = 297, M = DG.margin, pw = W - 2 * M, bottom = 282; let y = 20;
+    const T = s => String(s ?? '').replace(/²/g, '2').replace(/³/g, '3').replace(/≥/g, '>=').replace(/≤/g, '<=').replace(/[“”]/g, '"').replace(/[‘’]/g, "'").replace(/→/g, '->').replace(/✓/g, 'OK').replace(/–/g, '-').replace(/—/g, '-').replace(/…/g, '...').replace(/·/g, '-').replace(/[^\x00-\xFF€]/g, '');
+    const need = h => { if (y + h > bottom) { doc.addPage(); y = 20; } };
+    const text = (t, o = {}) => {
+      doc.setFont('helvetica', o.b ? 'bold' : o.i ? 'italic' : 'normal'); doc.setFontSize(o.size || 10.5); if (Array.isArray(o.color)) doc.setTextColor(o.color[0], o.color[1], o.color[2]); else doc.setTextColor(30);
+      const lines = doc.splitTextToSize(T(t), pw); const lh = (o.size || 10.5) * 0.42;
+      need(lines.length * lh); doc.text(lines, o.center ? W / 2 : o.right ? W - M : M, y, {align: o.center ? 'center' : o.right ? 'right' : 'left'}); y += lines.length * lh + (o.after ?? 2);
+      doc.setTextColor(30);
+    };
+    const [rc, gc, bc] = [parseInt(DG.color.slice(0, 2), 16), parseInt(DG.color.slice(2, 4), 16), parseInt(DG.color.slice(4, 6), 16)];
+    const table = (b) => {
+      doc.autoTable({startY: y, head: [b.head.map(T)], body: b.rows.map(r => r.map(T)), foot: b.foot ? [b.foot.map(T)] : undefined, theme: 'grid', margin: {left: M, right: M, bottom: 297 - bottom},
+        styles: {fontSize: b.small ? 7 : 8, cellPadding: 1.1, lineColor: [154, 165, 143], lineWidth: 0.15, textColor: 30, overflow: 'linebreak'},
+        headStyles: {fillColor: [232, 239, 227], textColor: 30, fontStyle: 'bold'}, footStyles: {fillColor: [244, 244, 244], textColor: 30, fontStyle: 'bold'},
+        columnStyles: Object.fromEntries(b.head.map((_, i) => [i, {halign: i > 0 && (b.align ? b.align[i] === 'r' : b.rows.every(r => r[i] === '' || r[i] == null || /^-?[\d.]+(,\d+)?( ?%)?$/.test(String(r[i]).trim()))) ? 'right' : 'left'}])),
+        didDrawPage: () => {}});
+      y = doc.lastAutoTable.finalY + 2;
+      if (b.caption) text(b.caption, {i: true, size: 8.5, after: 4}); else y += 2;
+    };
+    const image = (b, wmm, x) => { const w = Math.min(wmm || b.width || pw, pw); const h = w * b.h / b.w; need(h + 2); doc.addImage(b.url, 'PNG', x ?? (M + (pw - w) / 2), y, w, h); y += h + 2; };
+    for (const b of blocks) {
+      if (b.t === 'title') { y = 80; b.lines.forEach(l => text(l.text, {b: l.b, size: (l.size || 14) * 1.15, center: true, after: (l.after ?? 200) / 30})); doc.addPage(); y = 20; }
+      else if (b.t === 'h') { if (b.pageBreak && y > 24) { doc.addPage(); y = 20; } need(14); y += b.lvl === 1 ? 3 : 2; text(b.text, {b: true, size: b.lvl === 1 ? 15 : b.lvl === 2 ? 12.5 : 11, color: b.lvl <= 2 ? [rc, gc, bc] : undefined, after: 2.5}); if (b.lvl === 1) { doc.setDrawColor(154, 165, 143); doc.line(M, y - 0.5, W - M, y - 0.5); y += 3; } }
+      else if (b.t === 'p') String(b.text ?? '').split(/\n\s*\n/).forEach(t => text(t, {b: b.b, i: b.i, size: b.small ? 8.5 : 10.5, center: b.center, after: b.small ? 1.5 : 2.5}));
+      else if (b.t === 'kv') {
+        const cols = b.cols || 2; const n = Math.ceil(b.rows.length / (cols / 2)); const body = [];
+        for (let i = 0; i < n; i++) { const r = []; for (let k = 0; k < cols / 2; k++) { const kv = b.rows[i + k * n]; r.push(kv ? kv[0] : '', kv ? kv[1] : ''); } body.push(r.map(T)); }
+        const cs = {}; for (let k = 0; k < cols; k++) cs[k] = k % 2 === 0 ? {fontStyle: 'bold', fillColor: [232, 239, 227], cellWidth: pw / cols * 0.8} : {cellWidth: pw / cols * 1.2};
+        doc.autoTable({startY: y, body, theme: 'grid', margin: {left: M, right: M, bottom: 297 - bottom}, styles: {fontSize: 8, cellPadding: 1.1, lineColor: [154, 165, 143], lineWidth: 0.15, textColor: 30}, columnStyles: cs});
+        y = doc.lastAutoTable.finalY + 4;
+      }
+      else if (b.t === 'table') table(b);
+      else if (b.t === 'img') { image(b, b.width); if (b.caption) text(b.caption, {i: true, size: 8.5, center: true, after: 4}); }
+      else if (b.t === 'photos') {
+        const cols = b.cols || 2; const gap = 4; const wmm = (pw - gap * (cols - 1)) / cols;
+        for (let i = 0; i < b.items.length; i += cols) {
+          const row = b.items.slice(i, i + cols); const hs = row.map(it => wmm * (it.h || 3) / (it.w || 4)); const hmax = Math.max(...hs);
+          need(hmax + 12); const y0 = y;
+          row.forEach((it, k) => { const x = M + k * (wmm + gap); const h = hs[k]; doc.addImage(it.url, 'JPEG', x, y0, wmm, h); doc.setFontSize(8); doc.setFont('helvetica', 'normal'); const ls = doc.splitTextToSize(T(it.cap || ''), wmm); doc.text(ls, x + wmm / 2, y0 + h + 3.5, {align: 'center'}); });
+          y = y0 + hmax + 10;
+        }
+      }
+      else if (b.t === 'br') { doc.addPage(); y = 20; }
+      else if (b.t === 'hr') { doc.setDrawColor(154, 165, 143); doc.line(M, y, W - M, y); y += 3; }
+    }
+    const n = doc.getNumberOfPages();
+    for (let i = 1; i <= n; i++) { doc.setPage(i); doc.setFontSize(7.5); doc.setTextColor(110); doc.text(T(`${meta.footer || ''}${meta.footer ? ' – ' : ''}pag. ${i}/${n}`), W / 2, 291, {align: 'center'}); }
+    return doc.output('blob');
+  }
+};
+const DG_MIME = {docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', pdf: 'application/pdf'};
+
+/* ============================================================
    Martellata Campo — documenti: piedilista PDF, verbale, relazione di stima, Excel, CSV
    ============================================================ */
 const fname = (l, what, ext) => `${what}_${String(l.nome || 'lotto').replace(/[^\w]+/g, '_')}.${ext}`;
@@ -2767,6 +3024,86 @@ async function relazioneDocx(l) {
 }
 
 /* ============================================================
+   Report delle aree di saggio del lotto (Word e PDF): metodo, quadro per area, errore di stima,
+   composizione, distribuzioni diametriche, ceppaie/matricine (ceduo), verifiche e piedilista.
+   ============================================================ */
+const rf0 = x => fmt(x, 0), rf1 = x => fmt(x, 1), rf2 = x => fmt(x, 2);
+const rSp = s => `${s} ${spName(s)}`.trim();
+
+function adsReportBlocks(l) {
+  const st = adsStats(l); const tipi = ADS_TIPI[sezOf(l)]; const tk = Object.keys(tipi); const main = st.main; const ced = isCeduo(l); const sup = supLotto(l); const z = zero;
+  const m = st.ha[main] || z(); const B = [];
+  B.push({t: 'title', lines: [{text: ced ? 'MATRICINATURA DEL CEDUO' : 'MARTELLATA FORESTALE', b: true, size: 18}, {text: l.nome || '', b: true, size: 15, after: 300}, {text: [l.proprieta, l.comune ? 'Comune di ' + l.comune : '', l.localita].filter(Boolean).join(' – '), size: 12}, {text: l.regione ? 'Regione ' + l.regione : '', size: 11, after: 500}, {text: 'AREE DI SAGGIO', b: true, size: 14}, {text: 'Rilievi, tabelle e grafici', size: 11, after: 500}, {text: `Il tecnico: ${l.tecnico || ''}`, size: 11}, {text: new Date().toLocaleDateString('it-IT'), size: 10}]});
+  B.push({t: 'h', lvl: 1, text: '1. Il lotto e il metodo di rilievo'});
+  B.push({t: 'kv', cols: 4, rows: lotInfo(l)});
+  const forme = st.per.map(o => (o.a.forma || 'C') === 'C' ? 'C' : 'R'); const nC = forme.filter(f => f === 'C').length;
+  B.push({t: 'p', text: `Il soprassuolo è stato campionato con ${st.nA} aree di saggio${nC === st.nA ? ' circolari' : nC ? ` (${nC} circolari, ${st.nA - nC} rettangolari)` : ' rettangolari'} di superficie media ${rf0(st.supMean)} m² (superficie da norma ${rf0(adsSupNorma(l))} m²), per complessivi ${rf0(st.supTot)} m²${sup ? `, pari al ${rf2(st.supTot / (sup * 1e4) * 100)}% della superficie del lotto (${fmt(sup, 4)} ha)` : ''}. In ogni area ${ced ? 'sono stati contati polloni, matricine e ceppaie' : 'sono state cavallettate le piante'} per specie e classe diametrica di ${rf0(st.amp)} cm. I valori a ettaro derivano dal rapporto fra la superficie dell'area e l'ettaro; le altezze provengono dalle curve ipsometriche del lotto e i volumi dalle tavole di cubatura (INFC 2005 o tavole del piano). L'errore di stima è calcolato sul volume a ettaro con la t di Student (probabilità 95%).`});
+  const chk = adsChecks(l);
+  B.push({t: 'table', head: ['Verifica', 'Esito'], rows: chk.map(c => [c.t, c.ok === true ? 'OK' : c.ok === false ? 'Attenzione' : 'Nota']), caption: 'Tabella 1.1 – Verifiche sul campionamento.'});
+
+  B.push({t: 'h', lvl: 1, text: '2. Le aree di saggio'});
+  const rowA = o => { const a = o.a; const C = (a.forma || 'C') === 'C'; const t = o.T[main] || z(); return ['AS' + a.n, C ? 'Circolare' : 'Rettangolare', rf0(o.sup), C ? rf2(adsRaggio(a)) : '', a.pend ? rf0(num(a.pend)) : '', a.lat ? Number(a.lat).toFixed(5) : '', a.lon ? Number(a.lon).toFixed(5) : ''].concat(tk.map(k => rf0((o.T[k] || z()).n))).concat([rf0(t.n * o.k), rf2(t.g * o.k), rf1(t.v * o.k)]); };
+  B.push({t: 'table', small: true, head: ['AS', 'Forma', 'Sup. m²', 'Raggio m', 'Pend. %', 'Lat', 'Lon'].concat(tk.map(k => tipi[k])).concat([tipi[main] + ' N/ha', 'G m²/ha', 'V m³/ha']), rows: st.per.map(rowA),
+    foot: ['Media', '', rf0(st.supMean), '', '', '', ''].concat(tk.map(k => rf0(st.per.reduce((s, o) => s + (o.T[k] || z()).n, 0) / (st.nA || 1)))).concat([rf0(m.n), rf2(m.g), rf1(m.v)]), caption: `Tabella 2.1 – Aree di saggio: conteggi per area e valori a ettaro (${tipi[main].toLowerCase()}).`});
+  if (st.nA > 1) {
+    B.push({t: 'img', ...chartBars(st.per.map(o => 'AS' + o.a.n), [{name: 'N/ha', values: st.per.map(o => (o.T[main] || z()).n * o.k)}, {name: 'G m²/ha ×10', values: st.per.map(o => (o.T[main] || z()).g * o.k * 10)}, {name: 'V m³/ha', values: st.per.map(o => (o.T[main] || z()).v * o.k)}], {title: `Confronto fra le aree di saggio (${tipi[main].toLowerCase()})`, values: true, h: 320}), width: 160, caption: 'Figura 2.1 – N/ha, G (×10) e V/ha nelle singole aree di saggio.'});
+    B.push({t: 'img', ...chartErrBars([{name: 'Media del lotto', value: st.err.m, err: st.err.e !== '' ? st.err.m * st.err.e / 100 : 0}].concat(st.per.map(o => ({name: 'AS' + o.a.n, value: (o.T[main] || z()).v * o.k, color: '#9aa58f'}))), {title: 'Volume a ettaro (m³/ha): media con intervallo di confidenza al 95% e singole aree', xLabel: 'm³/ha'}), width: 160, caption: 'Figura 2.2 – Volume a ettaro: media del lotto con errore di stima e valori delle singole aree.'});
+  }
+  B.push({t: 'p', text: `Volume medio ${rf1(st.err.m)} m³/ha${st.err.sd !== '' ? `; deviazione standard ${rf1(st.err.sd)} m³/ha, coefficiente di variazione ${rf0(st.err.cv)}%, errore relativo ±${rf1(st.err.e)}% (t di Student con ${st.nA - 1} g.d.l., probabilità 95%)${st.err.e > 20 ? '. L\'errore supera il 20%: conviene aumentare il numero di aree di saggio' : ''}` : '; con una sola area di saggio l\'errore non è stimabile'}.`});
+
+  B.push({t: 'h', lvl: 1, text: `3. Composizione e valori a ettaro`});
+  const sps = adsSpList(st, main);
+  const rowS = (name, o) => [name, rf0(o.n), m.n ? rf0(o.n / m.n * 100) : '', rf2(o.g), m.g ? rf0(o.g / m.g * 100) : '', rf1(o.v), m.v ? rf0(o.v / m.v * 100) : '', sup ? rf1(o.v * sup) : '', o.q ? rf0(o.q) : ''];
+  B.push({t: 'table', head: ['Specie', 'N/ha', '% N', 'G m²/ha', '% G', 'V m³/ha', '% V', sup ? 'V tot m³' : '', 'q/ha'].filter(Boolean), rows: sps.map(s => rowS(rSp(s), st.haSp[main + '|' + s]).filter((_, i) => sup || i !== 7)), foot: rowS('Totale', m).filter((_, i) => sup || i !== 7), caption: `Tabella 3.1 – ${tipi[main]}: composizione specifica a ettaro${sup ? ' e volume totale sul lotto' : ''}.${m.vmiss ? ' Volume incompleto: mancano le altezze per alcune specie.' : ''}`});
+  if (sps.length > 1) B.push({t: 'img', ...chartPie(sps.map(s => ({name: rSp(s), value: m.v ? st.haSp[main + '|' + s].v : st.haSp[main + '|' + s].g})), {title: m.v ? 'Composizione per volume (m³/ha)' : 'Composizione per area basimetrica (m²/ha)', unit: m.v ? 'm³/ha' : 'm²/ha', dec: 1, w: 520, h: 280}), width: 130, caption: 'Figura 3.1 – Composizione specifica.'});
+  if (ced) {
+    const rows = [];
+    if (st.ha.C) rows.push(['Ceppaie', rf0(st.ha.C.n) + '/ha', m.n ? 'polloni per ceppaia ' + rf1(m.n / st.ha.C.n) : '', sup ? 'circa ' + rf0(st.ha.C.n * sup) + ' sul lotto' : '']);
+    if (st.ha.M) rows.push(['Matricine presenti', rf0(st.ha.M.n) + '/ha', 'G ' + rf2(st.ha.M.g) + ' m²/ha', 'V ' + rf1(st.ha.M.v) + ' m³/ha']);
+    const Mx = stats(l, x => x.dest === 'M'); if (Mx.tot.n) rows.push(['Matricine rilasciate (piedilista)', String(Mx.tot.n), sup ? rf0(Mx.tot.n / sup) + '/ha' : '', '']);
+    if (rows.length) B.push({t: 'table', head: ['Elemento', 'Valore', '', ''], rows, caption: 'Tabella 3.2 – Ceppaie e matricine.'});
+  } else {
+    const T = stats(l, x => x.dest === 'T');
+    if (T.tot.n && sup && m.v) B.push({t: 'table', head: ['', 'Provvigione', 'Martellata', '% prelievo'], rows: [['Volume m³', rf1(m.v * sup), rf1(T.tot.v), rf1(T.tot.v / (m.v * sup) * 100)], ['Area basimetrica m²', rf2(m.g * sup), rf2(T.tot.g), rf1(T.tot.g / (m.g * sup) * 100)], ['Piante n.', rf0(m.n * sup), String(T.tot.n), rf1(T.tot.n / (m.n * sup) * 100)]], caption: 'Tabella 3.2 – Percentuale di prelievo (piante martellate rispetto alla provvigione stimata).'});
+  }
+
+  B.push({t: 'h', lvl: 1, text: '4. Distribuzione diametrica'});
+  for (const tp of tk.filter(k => k !== 'C' && st.ha[k] && st.ha[k].n)) {
+    const cs = adsClList(st, tp); const sl = adsSpList(st, tp); if (!cs.length) continue;
+    const cell = (s, c) => { const x = st.haCl[tp + '|' + s + '|' + c]; return x && x.n ? x.n : 0; };
+    B.push({t: 'table', small: true, head: ['Classe cm'].concat(sl.map(rSp)).concat(['N/ha', 'V m³/ha']), rows: cs.map(c => [String(c)].concat(sl.map(s => cell(s, c) ? rf0(cell(s, c)) : '')).concat([rf0(sl.reduce((a, s) => a + cell(s, c), 0)), rf1(sl.reduce((a, s) => a + ((st.haCl[tp + '|' + s + '|' + c] || {}).v || 0), 0))])),
+      foot: ['Totale'].concat(sl.map(s => rf0(st.haSp[tp + '|' + s].n))).concat([rf0(st.ha[tp].n), rf1(st.ha[tp].v)]), caption: `Tabella 4.${tk.indexOf(tp) + 1} – ${tipi[tp]}: numero a ettaro per classe diametrica e specie.`});
+    const top = sl.slice(0, 6), altre = sl.slice(6);
+    const series = top.map(s => ({name: rSp(s), values: cs.map(c => cell(s, c))})); if (altre.length) series.push({name: 'Altre', values: cs.map(c => altre.reduce((a, s) => a + cell(s, c), 0))});
+    B.push({t: 'img', ...chartBars(cs.map(String), series, {title: `${tipi[tp]}: distribuzione diametrica (N/ha)`, stacked: true, xLabel: 'Classe diametrica (cm)', yLabel: 'N/ha', h: 320}), width: 160, caption: `Figura 4.${tk.indexOf(tp) + 1} – ${tipi[tp]} per classe diametrica e specie.`});
+    if (tp === main) B.push({t: 'img', ...chartLines(cs.map(String), [{name: 'V m³/ha', values: cs.map(c => sl.reduce((a, s) => a + ((st.haCl[tp + '|' + s + '|' + c] || {}).v || 0), 0))}], {title: 'Volume a ettaro per classe diametrica', xLabel: 'Classe diametrica (cm)', yLabel: 'm³/ha', h: 260}), width: 150, caption: 'Figura – Ripartizione del volume per classe diametrica.'});
+  }
+
+  B.push({t: 'h', lvl: 1, text: '5. Piedilista delle aree di saggio', pageBreak: true});
+  st.per.forEach(o => {
+    B.push({t: 'h', lvl: 3, text: `AS${o.a.n} – ${rf0(o.sup)} m²${o.a.note ? ' – ' + o.a.note : ''}`});
+    tk.filter(t => t !== 'C' && o.T[t]).forEach(t => {
+      const ks = Object.keys(o.cl).filter(k => k.startsWith(t + '|')); const sl = [...new Set(ks.map(k => k.split('|')[1]))]; const cs = [...new Set(ks.map(k => +k.split('|')[2]))].sort((a, b) => a - b);
+      const tot = c => sl.reduce((a, s) => a + (o.cl[t + '|' + s + '|' + c] || 0), 0);
+      B.push({t: 'table', small: true, head: [tipi[t] + ' – d cm'].concat(sl.map(rSp)).concat(['Totale']), rows: cs.map(c => [String(c)].concat(sl.map(s => o.cl[t + '|' + s + '|' + c] ? String(o.cl[t + '|' + s + '|' + c]) : '')).concat([String(tot(c))])), foot: ['Totale'].concat(sl.map(s => String(cs.reduce((a, c) => a + (o.cl[t + '|' + s + '|' + c] || 0), 0)))).concat([String(cs.reduce((a, c) => a + tot(c), 0))])});
+    });
+    if (o.T.C) B.push({t: 'p', small: true, text: 'Ceppaie: ' + Object.keys(o.sp).filter(k => k.startsWith('C|')).map(k => `${spName(k.slice(2))} ${o.sp[k].n}`).join(', ') + ` (totale ${o.T.C.n})`});
+  });
+  return B;
+}
+
+async function adsReport(kind) {
+  const l = lot(); if (!l) return;
+  if (!adsOf(l.id).length) { toast('Nessuna area di saggio nel lotto.', 3000); return; }
+  toast('Preparo il report…', 2500);
+  try {
+    const B = adsReportBlocks(l); const meta = {title: 'Aree di saggio – ' + (l.nome || ''), footer: `${l.nome || 'Lotto'} – Aree di saggio`, creator: 'Martellata Campo'};
+    const blob = kind === 'pdf' ? await DG.pdf(B, meta) : await DG.docx(B, meta);
+    await out(fname(l, 'Aree_di_saggio', kind), blob, DG_MIME[kind], kind === 'pdf');
+  } catch (e) { console.error(e); toast('Errore nel report: ' + e.message, 4000); }
+}
+
+/* ============================================================
    Martellata Campo — aree di saggio, stime a ettaro e riepilogo per sezione
    Alto fusto: provvigione dalle aree di saggio + martellata pianta per pianta → % di prelievo.
    Ceduo: polloni, ceppaie e matricine nelle aree di saggio → massa ritraibile;
@@ -2934,6 +3271,7 @@ VIEWS.riepilogo = () => {
       <button class="btn" onclick="R.print('stima')">Provvigione e prelievo</button>${Mx.tot.n ? `<button class="btn sec" onclick="R.print('M')">Piedilista riserve</button>` : ''}`}
     <button class="btn sec" onclick="R.print('verbale')">Verbale (stampa)</button><button class="btn sec" onclick="R.verbaleDocx()">Verbale (Word)</button>
     <button class="btn sec" onclick="R.relazione()">Relazione di stima (Word)</button><button class="btn sec" onclick="R.print('tutto')">Fascicolo completo</button>
+    <button class="btn" onclick="adsReport('docx')">Report aree di saggio con grafici (Word)</button><button class="btn" onclick="adsReport('pdf')">Report aree di saggio con grafici (PDF)</button>
     <button class="btn sec" onclick="R.xlsx()">Excel (.xlsx)</button><button class="btn sec" onclick="R.csv()">CSV</button></div></div>`;
   $('#view').innerHTML = h;
 };
