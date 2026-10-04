@@ -159,6 +159,11 @@ table.pl tr{cursor:pointer}
 .clsgrid button.has{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,var(--card))}
 .clsgrid button.minus{border-style:dashed;color:#c0392b}
 @media(max-width:360px){.clsgrid{grid-template-columns:repeat(4,1fr)}}
+#bign{position:fixed;inset:0;z-index:9000;display:none;align-items:center;justify-content:center;flex-direction:column;background:rgba(20,40,18,.92);color:#fff;text-align:center;padding:24px}
+#bign.on{display:flex}
+#bign .bn{font-size:min(38vw,200px);font-weight:900;line-height:1;letter-spacing:-.02em}
+#bign .bn.x{color:#ffb4a8}
+#bign .bs{margin-top:18px;font-size:1.25rem;opacity:.9}
 </style>
 </head>
 <body>
@@ -182,7 +187,10 @@ table.pl tr{cursor:pointer}
    Martellata Campo — dati: specie, tavole di cubatura INFC, norme regionali
    Tutto modificabile nell'app (Altro → Specie e tavole, Norme).
    ============================================================ */
-const APP_VER = '1.3.0';
+const APP_VER = '1.4.0';
+/* etichetta della pianta: numero progressivo oppure X (pianta martellata sotto il diametro di numerazione) */
+const nLab = x => x && x.segno === 'X' ? 'X' : (x && x.n != null ? String(x.n) : '');
+const dnumOf = l => num((l || {}).dnum);
 const APP_NAME = 'Martellata Campo';
 
 /* Equazioni INFC 2005 (Tabacchi et al., 2011): volume fusto e rami grossi v [dm³] = b1 + b2·d²·h (+ b3·d);
@@ -538,6 +546,13 @@ async function dropS(store, id) { S[store] = S[store].filter(x => x.id !== id); 
 async function remove(store, id) { await dropS(store, id); LS.set('mc-lastmod', Date.now()); if (typeof autoMark === 'function') autoMark(); const d = LS.get('mc-deleted', []); d.push(id); LS.set('mc-deleted', d.slice(-8000)); }
 const timers = {};
 function saveLater(store, obj, ms = 400) { clearTimeout(timers[obj.id]); timers[obj.id] = setTimeout(() => save(store, obj), ms); }
+/* numero (o X) a tutto schermo dopo la registrazione, per dettarlo ai collaboratori */
+let _bigT = null;
+function bigShow(txt, sub, isX) {
+  let el = $('#bign'); if (!el) { el = document.createElement('div'); el.id = 'bign'; el.onclick = () => { el.classList.remove('on'); }; document.body.appendChild(el); }
+  el.innerHTML = `<div class="bn ${isX ? 'x' : ''}">${esc(txt)}</div><div class="bs">${esc(sub || '')}</div>`; el.classList.add('on');
+  clearTimeout(_bigT); _bigT = setTimeout(() => el.classList.remove('on'), isX ? 2200 : 2600);
+}
 function toast(msg, ms = 1800) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), ms); }
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
 
@@ -667,6 +682,7 @@ VIEWS.lotti = () => {
       ${fld('lotti', l, 'presenti', 'Presenti alle operazioni (nome, qualifica)', 'a')}
       ${fld('lotti', l, 'segni', 'Segni convenzionali e modalità di contrassegno', 'a', 'placeholder="es. piante da abbattere: specchiatura al ceppo con impronta del martello e numero in vernice rossa; matricine: anello di vernice gialla a petto d\'uomo"')}
       <div class="g2">${fld('lotti', l, 'amp', 'Ampiezza classi diametriche (cm)', 'n')}${fld('lotti', l, 'dmin', 'Diametro minimo di cavallettamento (cm)', 'n')}</div>
+      ${fld('lotti', l, 'dnum', 'Diametro minimo per numerare le piante da abbattere (cm): sotto questo valore la pianta è contrassegnata con una X senza numero', 'n')}
       ${fld('lotti', l, 'prescr', 'Prescrizioni / modalità di esecuzione', 'a')}
       <button class="btn warn sm" onclick="A.delLot()">Elimina lotto</button></div>`;
     const ck = checks(l);
@@ -693,7 +709,7 @@ VIEWS.martella = () => {
   const n = sel.nextN != null && sel.nextLot === l.id ? sel.nextN : nextNum(l);
   sel.nextN = n; sel.nextLot = l.id;
   const last = pianteOf(l.id).filter(x => x.dev === DEV).sort((a, b) => (b.t || 0) - (a.t || 0)).slice(0, 6);
-  const dmin = num(l.dmin);
+  const dmin = num(l.dmin), dnum = dnumOf(l); const nX = pianteOf(l.id).filter(x => x.segno === 'X').length;
   let h = `<div class="tally-head">
     ${ar.length ? `<div class="chips" style="margin-bottom:6px">${ar.map(a => `<button class="chip ${sel.area === a.id ? 'on' : ''}" onclick="A.setArea('${a.id}')">${(c => c ? `<span style="color:${c.col}">●</span> ` : '')(incColor('area', a))}${esc(a.nome)}</button>`).join('')}<button class="chip ${!sel.area ? 'on' : ''}" onclick="A.setArea('')">nessuna</button></div>${sel.area && S.aree.find(a => a.id === sel.area) ? incBar('area', S.aree.find(a => a.id === sel.area)) : ''}` : ''}
     <div class="stati">${(isCeduo(l) ? ['M', 'T', 'R'] : ['T', 'M', 'R']).map(k => [k, DEST_S[k]]).map(([k, v]) => `<button class="${sel.dest === k ? 'on' : ''} d${k}" onclick="A.setDest('${k}')">${v}</button>`).join('')}</div>
@@ -703,7 +719,7 @@ VIEWS.martella = () => {
   </div>
   <div class="card" style="padding:10px 12px">
     <div class="row" style="justify-content:space-between">
-      <div><span class="muted">Pianta n.</span><div class="row" style="gap:4px"><button class="btn sm sec" onclick="A.nAdj(-1)">−</button><input id="nn" value="${n}" inputmode="numeric" style="width:90px;font-size:1.4rem;font-weight:700;text-align:center;min-height:44px;padding:4px" onchange="A.nSet(this.value)"><button class="btn sm sec" onclick="A.nAdj(1)">+</button></div></div>
+      <div><span class="muted">Pianta n.</span><div class="row" style="gap:4px"><button class="btn sm sec" onclick="A.nAdj(-1)">−</button><input id="nn" value="${n}" inputmode="numeric" style="width:110px;font-size:2rem;font-weight:800;text-align:center;min-height:52px;padding:4px" onchange="A.nSet(this.value)"><button class="btn sm sec" onclick="A.nAdj(1)">+</button></div></div>
       <div style="text-align:right"><span class="muted">${esc(spName(sel.sp))} · ${DEST_S[sel.dest]}${sel.dest === 'M' ? ' ' + sel.eta : ''}</span>
         <div class="row" style="justify-content:flex-end;gap:6px"><span class="kpv ${KP.f === 'd' ? 'on' : ''}" onclick="A.kf('d')">d <b id="kd">${KP.d || '–'}</b> cm</span><span class="kpv ${KP.f === 'h' ? 'on' : ''}" onclick="A.kf('h')">h <b id="kh">${KP.h || '–'}</b> m</span></div></div>
     </div>
@@ -712,11 +728,11 @@ VIEWS.martella = () => {
   </div>
   <div class="kpad">${['7', '8', '9', '4', '5', '6', '1', '2', '3', ',', '0', '⌫'].map(k => `<button onclick="A.kp('${k}')">${k}</button>`).join('')}</div>
   <button class="btn block big" onclick="A.reg()">Registra ${sel.dest === 'M' ? 'matricina' : 'pianta'} ${n}</button>
-  ${dmin ? `<p class="muted" style="margin:4px 0">Diametro minimo ${fmt(dmin, 1)} cm</p>` : ''}
+  ${dmin || (dnum && sel.dest === 'T') ? `<p class="muted" style="margin:4px 0">${dmin ? `Diametro minimo ${fmt(dmin, 1)} cm` : ''}${dmin && dnum && sel.dest === 'T' ? ' · ' : ''}${dnum && sel.dest === 'T' ? `sotto ${fmt(dnum, 0)} cm: contrassegno <b>X</b> senza numero` : ''}</p>` : ''}
   <div class="dict"><input id="dict" placeholder="Dettatura: FA32 CE41 h18" autocomplete="off" autocapitalize="characters" onkeydown="if(event.key==='Enter')A.dict()"><button class="btn" onclick="A.dict()">↵</button></div>
   <div class="card"><b>Ultime registrate</b><div class="tw"><table><tr><th>N.</th><th>Specie</th><th>d</th><th>h</th><th>Dest.</th><th></th></tr>
-    ${last.map(x => `<tr><td><b>${esc(x.n)}</b></td><td>${esc(x.sp)}</td><td>${fmt(num(x.d), 0)}</td><td>${x.h ? fmt(num(x.h), 1) : ''}</td><td>${DEST_S[x.dest] || ''}${x.eta ? ' ' + x.eta : ''}${x.stato && x.stato !== 'V' ? ' · ' + x.stato : ''}</td><td><button class="chip" style="min-height:30px;padding:2px 10px" onclick="A.editTree('${x.id}')">✎</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nessuna pianta.</td></tr>'}</table></div>
-    <p class="muted" style="margin:6px 0 0">Nel lotto: ${pianteOf(l.id).filter(x => x.dest === 'T').length} da abbattere · ${pianteOf(l.id).filter(x => x.dest === 'M').length} matricine · ${pianteOf(l.id).filter(x => x.dest === 'R').length} di confine</p></div>`;
+    ${last.map(x => `<tr><td><b>${esc(nLab(x))}</b></td><td>${esc(x.sp)}</td><td>${fmt(num(x.d), 0)}</td><td>${x.h ? fmt(num(x.h), 1) : ''}</td><td>${DEST_S[x.dest] || ''}${x.eta ? ' ' + x.eta : ''}${x.stato && x.stato !== 'V' ? ' · ' + x.stato : ''}</td><td><button class="chip" style="min-height:30px;padding:2px 10px" onclick="A.editTree('${x.id}')">✎</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Nessuna pianta.</td></tr>'}</table></div>
+    <p class="muted" style="margin:6px 0 0">Nel lotto: ${pianteOf(l.id).filter(x => x.dest === 'T').length} da abbattere · ${pianteOf(l.id).filter(x => x.dest === 'M').length} matricine · ${pianteOf(l.id).filter(x => x.dest === 'R').length} di confine${nX ? ` · ${nX} con contrassegno X` : ''}</p></div>`;
   $('#view').innerHTML = h;
   if (LS.get('mc-gps', false)) treeGpsStart();
 };
@@ -736,7 +752,7 @@ VIEWS.elenco = () => {
     <div class="chips" style="margin-bottom:8px">${(isCeduo(l) ? [['tutte', 'Tutte'], ['M', 'Matricine'], ['T', 'Da abbattere'], ['R', 'Confine']] : [['tutte', 'Tutte'], ['T', 'Martellata'], ['M', 'Riserve'], ['R', 'Confine']]).map(([k, v]) => `<button class="chip ${f === k ? 'on' : ''}" onclick="sel.filt='${k}';go('elenco')">${v} (${k === 'tutte' ? pianteOf(l.id).length : pianteOf(l.id).filter(x => x.dest === k).length})</button>`).join('')}</div>
     ${dupWarn(l)}
     <div class="tw"><table class="pl"><tr><th>N.</th><th>Specie</th><th>d cm</th><th>h m</th><th>V m³</th><th>Dest.</th><th>Area</th><th></th></tr>
-    ${list.map(x => { const c = treeCalc(l, x, cur); return `<tr onclick="A.editTree('${x.id}')"><td><b>${esc(x.n)}</b></td><td>${esc(x.sp)}</td><td>${fmt(num(x.d), 0)}</td><td>${c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '–'}</td><td>${c.v != null ? fmt(c.v, 3) : '–'}</td><td>${DEST_S[x.dest] || ''}${x.eta ? ' ' + x.eta : ''}</td><td>${esc(areaName(x.areaId))}</td><td>${x.lat ? '⌖' : ''}</td></tr>`; }).join('') || '<tr><td colspan="8" class="muted">Nessuna pianta.</td></tr>'}</table></div>
+    ${list.map(x => { const c = treeCalc(l, x, cur); return `<tr onclick="A.editTree('${x.id}')"><td><b>${esc(nLab(x))}</b></td><td>${esc(x.sp)}</td><td>${fmt(num(x.d), 0)}</td><td>${c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '–'}</td><td>${c.v != null ? fmt(c.v, 3) : '–'}</td><td>${DEST_S[x.dest] || ''}${x.eta ? ' ' + x.eta : ''}</td><td>${esc(areaName(x.areaId))}</td><td>${x.lat ? '⌖' : ''}</td></tr>`; }).join('') || '<tr><td colspan="8" class="muted">Nessuna pianta.</td></tr>'}</table></div>
     <p class="muted">* altezza stimata (curva ipsometrica o altezza media). Tocca una riga per modificarla.</p></div>`;
   $('#view').innerHTML = h;
 };
@@ -747,8 +763,9 @@ function dupWarn(l) {
 }
 function treeForm(x) {
   const l = lot(); const c = treeCalc(l, x, curves(l.id));
-  return `<div class="card" id="tform"><h2>Pianta n. ${esc(x.n)}</h2>
-    <div class="g2">${fld('piante', x, 'n', 'Numero', 'n')}<label class="f"><span>Specie</span><select data-s="piante" data-id="${x.id}" data-k="sp" onchange="A.setF(this)">${S.specie.map(s => `<option value="${s.id}" ${s.id === x.sp ? 'selected' : ''}>${esc(s.id)} – ${esc(s.nome)}</option>`).join('')}</select></label></div>
+  return `<div class="card" id="tform"><h2>Pianta ${x.segno === 'X' ? 'con contrassegno X' : 'n. ' + esc(x.n)}</h2>
+    <div class="g2">${fld('piante', x, 'n', 'Numero (vuoto se X)', 'n')}${selF('piante', x, 'segno', 'Contrassegno', [['', 'Numero'], ['X', 'X (non numerata)']])}</div>
+    <div class="g2"><label class="f"><span>Specie</span><select data-s="piante" data-id="${x.id}" data-k="sp" onchange="A.setF(this)">${S.specie.map(s => `<option value="${s.id}" ${s.id === x.sp ? 'selected' : ''}>${esc(s.id)} – ${esc(s.nome)}</option>`).join('')}</select></label></div>
     <div class="g2">${fld('piante', x, 'd', 'Diametro a 1,30 m (cm)', 'n')}${fld('piante', x, 'h', 'Altezza misurata (m)', 'n', `placeholder="${c.h != null ? 'stimata ' + fmt(c.h, 1) : ''}"`)}</div>
     <div class="g2">${selF('piante', x, 'dest', 'Destinazione', Object.entries(DEST))}${selF('piante', x, 'eta', 'Età matricina', ETA)}</div>
     <div class="g2">${selF('piante', x, 'stato', 'Stato', [['V', 'Viva'], ['S', 'Secca'], ['D', 'Deperiente'], ['X', 'Schiantata']])}${selF('piante', x, 'areaId', 'Area', areeOf(l.id).map(a => [a.id, a.nome]))}</div>
@@ -865,7 +882,7 @@ const A = {
   },
   async newLot(sez = 'fustaia') {
     const ced = sez === 'ceduo';
-    const l = {id: uid(), sez, nome: ced ? 'Nuovo lotto ceduo' : 'Nuovo lotto fustaia', regione: LS.get('mc-reg', 'Calabria'), governo: ced ? 'Ceduo matricinato' : 'Fustaia', intervento: ced ? 'Taglio di fine turno del ceduo' : 'Diradamento', amp: ced ? 2 : 5, dmin: ced ? 3 : '', tecnico: LS.get('mc-tec', ''), data1: new Date().toISOString().slice(0, 10), t: Date.now()};
+    const l = {id: uid(), sez, nome: ced ? 'Nuovo lotto ceduo' : 'Nuovo lotto fustaia', regione: LS.get('mc-reg', 'Calabria'), governo: ced ? 'Ceduo matricinato' : 'Fustaia', intervento: ced ? 'Taglio di fine turno del ceduo' : 'Diradamento', amp: ced ? 2 : 5, dmin: ced ? 3 : '', dnum: ced ? '' : 18, tecnico: LS.get('mc-tec', ''), data1: new Date().toISOString().slice(0, 10), t: Date.now()};
     await save('lotti', l); sel.lot = l.id; sel.area = ''; sel.ads = ''; sel.nextN = null; sel.dest = ced ? 'M' : 'T'; persistSel(); go('lotti');
     setTimeout(() => { const i = document.querySelector('input[data-k=nome]'); if (i) { i.focus(); i.select(); } }, 50);
   },
@@ -902,15 +919,16 @@ const A = {
     const l = lot(); const d = num(dv), h = num(hv);
     if (!d) return toast('Inserisci il diametro');
     if (d > 250 || (h && (h > 60 || h < 1.3))) return toast('Valore fuori scala: controlla');
-    const n = num(sel.nextN) || nextNum(l);
-    if (pianteOf(l.id).some(x => num(x.n) === n) && !confirm(`Il numero ${n} è già usato nel lotto. Registrare lo stesso?`)) return;
-    const x = {id: uid(), lottoId: l.id, areaId: sel.area || '', n, sp, d, h: h || '', dest: sel.dest, eta: sel.dest === 'M' ? sel.eta : '', stato: sel.stato, note: '', op: opName(), dev: DEV, t: Date.now()};
+    const dnum = dnumOf(l); const isX = sel.dest === 'T' && dnum && d < dnum;
+    const n = isX ? '' : (num(sel.nextN) || nextNum(l));
+    if (!isX && pianteOf(l.id).some(x => num(x.n) === n) && !confirm(`Il numero ${n} è già usato nel lotto. Registrare lo stesso?`)) return;
+    const x = {id: uid(), lottoId: l.id, areaId: sel.area || '', n, segno: isX ? 'X' : '', sp, d, h: h || '', dest: sel.dest, eta: sel.dest === 'M' ? sel.eta : '', stato: sel.stato, note: '', op: opName(), dev: DEV, t: Date.now()};
     if (LS.get('mc-gps', false) && TG.pos && TG.pos.accuracy < 50) { x.lat = TG.pos.latitude; x.lon = TG.pos.longitude; x.acc = Math.round(TG.pos.accuracy * 10) / 10; }
     else if (sel.area === '' && areeOf(l.id).length === 1) x.areaId = areeOf(l.id)[0].id;
     if (x.lat != null && !x.areaId) { const a = areeOf(l.id).find(a => a.geom && a.tipo !== 'Area esclusa' && GEO.inside([x.lon, x.lat], a.geom)); if (a) x.areaId = a.id; }
     await save('piante', x); buzz(15);
-    sel.nextN = n + 1; KP.d = ''; KP.h = ''; KP.f = 'd'; sel.stato = 'V';
-    toast(`N. ${n} ${sp} d ${fmt(d, 0)}${h ? ' h ' + fmt(h, 1) : ''} → ${DEST_S[x.dest]}`, 1100);
+    if (!isX) sel.nextN = n + 1; KP.d = ''; KP.h = ''; KP.f = 'd'; sel.stato = 'V';
+    bigShow(isX ? 'X' : String(n), `${sp} ${spName(sp)} · d ${fmt(d, 0)}${h ? ' · h ' + fmt(h, 1) : ''} · ${DEST_S[x.dest]}${isX ? ` · sotto ${fmt(dnum, 0)} cm, senza numero` : ''}`, isX);
     go('martella');
   },
   dict() {
@@ -922,7 +940,7 @@ const A = {
   },
   gpsTree() { const on = !LS.get('mc-gps', false); LS.set('mc-gps', on); if (!on) treeGpsStop(); go('martella'); },
   editTree(id) { const x = S.piante.find(p => p.id === id); if (!x) return; $('#view').innerHTML = treeForm(x); window.scrollTo(0, 0); },
-  async delTree(id) { const x = S.piante.find(p => p.id === id); if (!confirm(`Eliminare la pianta n. ${x.n}?`)) return; await remove('piante', id); go(sel.view); },
+  async delTree(id) { const x = S.piante.find(p => p.id === id); if (!confirm(`Eliminare la pianta ${nLab(x)}?`)) return; await remove('piante', id); go(sel.view); },
   treePos(id) {
     if (!navigator.geolocation) return toast('GPS non disponibile');
     toast('Ricerca posizione…', 2500);
@@ -1286,7 +1304,7 @@ function mcSchema() {
   return {
     lotto: {geom: null, cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER']].concat(LOT_F.map(k => [k, ['eta', 'turno', 'sup', 'pend', 'amp', 'dmin'].includes(k) ? 'REAL' : 'TEXT'])).concat([['extra', 'TEXT']])},
     aree: {geom: 'MULTIPOLYGON', cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['nome', 'TEXT'], ['tipo', 'TEXT'], ['note', 'TEXT'], ['sup_carto', 'REAL']]},
-    piante: {geom: 'POINT', cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['n', 'INTEGER'], ['specie', 'TEXT'], ['d', 'REAL'], ['h', 'REAL'], ['dest', 'TEXT'], ['eta', 'TEXT'], ['stato', 'TEXT'], ['area_uuid', 'TEXT'], ['area_nome', 'TEXT'], ['note', 'TEXT'], ['operatore', 'TEXT'], ['dispositivo', 'TEXT'], ['data', 'TEXT'], ['acc', 'REAL'], ['volume', 'REAL']]},
+    piante: {geom: 'POINT', cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['n', 'INTEGER'], ['specie', 'TEXT'], ['d', 'REAL'], ['h', 'REAL'], ['dest', 'TEXT'], ['eta', 'TEXT'], ['stato', 'TEXT'], ['segno', 'TEXT'], ['area_uuid', 'TEXT'], ['area_nome', 'TEXT'], ['note', 'TEXT'], ['operatore', 'TEXT'], ['dispositivo', 'TEXT'], ['data', 'TEXT'], ['acc', 'REAL'], ['volume', 'REAL']]},
     altezze: {geom: null, cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['specie', 'TEXT'], ['d', 'REAL'], ['h', 'REAL'], ['operatore', 'TEXT'], ['data', 'TEXT']]},
     tavole: {geom: null, cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['nome', 'TEXT'], ['fonte', 'TEXT'], ['tipo', 'TEXT'], ['dati', 'TEXT']]},
     ads: {geom: 'POINT', cols: [['uuid', 'TEXT'], ['mod_ts', 'INTEGER'], ['n', 'INTEGER'], ['sigla', 'TEXT'], ['forma', 'TEXT'], ['sup', 'REAL'], ['raggio', 'REAL'], ['lati', 'TEXT'], ['pend', 'REAL'], ['eta', 'REAL'], ['area_uuid', 'TEXT'], ['note', 'TEXT'], ['operatore', 'TEXT'], ['data', 'TEXT'], ['acc', 'REAL']]},
@@ -1305,7 +1323,7 @@ async function exportGpkg(lotId) {
   if (bu) { try { base = new SQL.Database(bu); } catch (e) { base = null; } }
   const l = S.lotti.find(x => x.id === lotId); const schema = mcSchema(); gpkgInit(db, schema);
   db.run('BEGIN');
-  const lr = {fid: 1, uuid: l.id, mod_ts: l.mod || Date.now(), extra: JSON.stringify({hm: l.hm || {}, tav: l.tav || {}, peso: l.peso || {}})};
+  const lr = {fid: 1, uuid: l.id, mod_ts: l.mod || Date.now(), extra: JSON.stringify({hm: l.hm || {}, tav: l.tav || {}, peso: l.peso || {}, dnum: l.dnum ?? ''})};
   LOT_F.forEach(k => lr[k] = schema.lotto.cols.find(c => c[0] === k)[1] === 'REAL' ? numOrNull(l[k]) : (l[k] ?? null));
   insertRow(db, 'lotto', schema.lotto, lr);
   const ext = [Infinity, Infinity, -Infinity, -Infinity]; const grow = g => { const b = GEO.bbox(g); ext[0] = Math.min(ext[0], b[0]); ext[1] = Math.min(ext[1], b[1]); ext[2] = Math.max(ext[2], b[2]); ext[3] = Math.max(ext[3], b[3]); };
@@ -1320,7 +1338,7 @@ async function exportGpkg(lotId) {
   const ps = pianteOf(lotId); await fidFix('piante', ps); const cur = curves(lotId);
   for (const x of ps) {
     const c = treeCalc(l, x, cur);
-    const row = {fid: x.fid, uuid: x.id, mod_ts: x.mod || x.t || Date.now(), n: numOrNull(x.n), specie: x.sp, d: numOrNull(x.d), h: numOrNull(x.h), dest: x.dest || null, eta: x.eta || null, stato: x.stato || null, area_uuid: x.areaId || null, area_nome: areaName(x.areaId) || null, note: x.note || null, operatore: x.op || null, dispositivo: x.dev || null, data: x.t ? new Date(x.t).toISOString() : null, acc: x.acc ?? null, volume: c.v != null ? Math.round(c.v * 10000) / 10000 : null};
+    const row = {fid: x.fid, uuid: x.id, mod_ts: x.mod || x.t || Date.now(), n: numOrNull(x.n), specie: x.sp, d: numOrNull(x.d), h: numOrNull(x.h), dest: x.dest || null, eta: x.eta || null, stato: x.stato || null, segno: x.segno || null, area_uuid: x.areaId || null, area_nome: areaName(x.areaId) || null, note: x.note || null, operatore: x.op || null, dispositivo: x.dev || null, data: x.t ? new Date(x.t).toISOString() : null, acc: x.acc ?? null, volume: c.v != null ? Math.round(c.v * 10000) / 10000 : null};
     if (x.lat != null && x.lon != null && x.lat !== '') row.geom = GEO.writeGPKG(GEO.toSrs({type: 'Point', coordinates: [+x.lon, +x.lat]}), SRS);
     insertRow(db, 'piante', schema.piante, row);
   }
@@ -1391,7 +1409,7 @@ async function importGpkg_(u8, intoLotId, opt = {}) {
   if (!l) l = S.lotti.find(x => x.id === intoLotId);
   if (lr && (rep.lotto || (lr.mod_ts || 0) > (l.mod || 0))) {
     LOT_F.forEach(k => { if (lr[k] != null) l[k] = typeof lr[k] === 'number' ? String(lr[k]) : lr[k]; });
-    try { const e = JSON.parse(lr.extra || '{}'); ['hm', 'tav', 'peso'].forEach(k => { if (e[k]) l[k] = e[k]; }); } catch (e) {}
+    try { const e = JSON.parse(lr.extra || '{}'); ['hm', 'tav', 'peso', 'dnum'].forEach(k => { if (e[k] != null && e[k] !== '') l[k] = e[k]; }); } catch (e) {}
     l.mod = lr.mod_ts || l.mod; await putS('lotti', l);
   }
   const lotId = l.id;
@@ -1410,14 +1428,14 @@ async function importGpkg_(u8, intoLotId, opt = {}) {
   // piante
   const areaOf = (r, g) => { if (r.area_uuid && S.aree.some(a => a.id === r.area_uuid)) return r.area_uuid; if (g) { const a = areeOf(lotId).find(a => a.geom && a.tipo !== 'Area esclusa' && GEO.inside(g.coordinates, a.geom)); if (a) return a.id; } const a = r.area_nome && areeOf(lotId).find(a => a.nome === r.area_nome); return a ? a.id : ''; };
   await merge3({db, bdb, t: 'piante', store: 'piante', lotId, del, rep,
-    F: [['n', 'n'], ['sp', 't'], ['d', 'n'], ['h', 'n'], ['dest', 't'], ['eta', 't'], ['stato', 't'], ['areaId', 't'], ['note', 't'], ['op', 't'], ['pos', 't']],
+    F: [['n', 'n'], ['sp', 't'], ['d', 'n'], ['h', 'n'], ['dest', 't'], ['eta', 't'], ['stato', 't'], ['segno', 't'], ['areaId', 't'], ['note', 't'], ['op', 't'], ['pos', 't']],
     conv: (r, gc, loc) => {
-      if (loc) return {n: loc.n, sp: loc.sp, d: loc.d, h: loc.h, dest: loc.dest, eta: loc.eta, stato: loc.stato, areaId: loc.areaId, note: loc.note, op: loc.op, pos: posKey(loc.lon, loc.lat)};
+      if (loc) return {n: loc.n, sp: loc.sp, d: loc.d, h: loc.h, dest: loc.dest, eta: loc.eta, stato: loc.stato, segno: loc.segno || '', areaId: loc.areaId, note: loc.note, op: loc.op, pos: posKey(loc.lon, loc.lat)};
       const g = readGeom(r, gc);
-      return {n: r.n ?? '', sp: String(r.specie || '').toUpperCase(), d: r.d ?? '', h: r.h ?? '', dest: r.dest || 'T', eta: r.eta || '', stato: r.stato || 'V', areaId: areaOf(r, g), note: r.note || '', op: r.operatore || '', pos: g ? posKey(g.coordinates[0], g.coordinates[1]) : '', lon: g ? g.coordinates[0] : null, lat: g ? g.coordinates[1] : null, acc: r.acc, dev: r.dispositivo || '', t: r.data ? Date.parse(r.data) : (r.mod_ts || Date.now())};
+      return {n: r.n ?? '', sp: String(r.specie || '').toUpperCase(), d: r.d ?? '', h: r.h ?? '', dest: r.dest || 'T', eta: r.eta || '', stato: r.stato || 'V', segno: r.segno || '', areaId: areaOf(r, g), note: r.note || '', op: r.operatore || '', pos: g ? posKey(g.coordinates[0], g.coordinates[1]) : '', lon: g ? g.coordinates[0] : null, lat: g ? g.coordinates[1] : null, acc: r.acc, dev: r.dispositivo || '', t: r.data ? Date.parse(r.data) : (r.mod_ts || Date.now())};
     },
     apply: (loc, k, R) => { if (k === 'pos') { loc.lat = R.lat; loc.lon = R.lon; loc.acc = R.acc; } else loc[k] = R[k]; },
-    mk: (R, r) => { if (!R.sp || !R.d) return null; const o = {id: uid(), lottoId: lotId, n: R.n, sp: R.sp, d: R.d, h: R.h, dest: R.dest, eta: R.eta, stato: R.stato, areaId: R.areaId, note: R.note, op: R.op, dev: R.dev, t: R.t, mod: r.mod_ts || 0, fid: r.fid}; if (R.lat != null) { o.lat = R.lat; o.lon = R.lon; o.acc = R.acc; } return o; }});
+    mk: (R, r) => { if (!R.sp || !R.d) return null; const o = {id: uid(), lottoId: lotId, n: R.n, sp: R.sp, d: R.d, h: R.h, dest: R.dest, eta: R.eta, stato: R.stato, segno: R.segno || '', areaId: R.areaId, note: R.note, op: R.op, dev: R.dev, t: R.t, mod: r.mod_ts || 0, fid: r.fid}; if (R.lat != null) { o.lat = R.lat; o.lon = R.lon; o.acc = R.acc; } return o; }});
   // altezze
   await merge3({db, bdb, t: 'altezze', store: 'altezze', lotId, del, rep,
     F: [['sp', 't'], ['d', 'n'], ['h', 'n'], ['op', 't']],
@@ -1526,8 +1544,8 @@ function drawLayers(fit) {
   });
   pianteOf(l.id).filter(x => x.lat != null && x.lat !== '').forEach(x => {
     const m = L.circleMarker([x.lat, x.lon], {radius: 6, color: '#fff', weight: 1.5, fillColor: DCOL[x.dest] || '#555', fillOpacity: .95});
-    m.on('click', ev => { L.DomEvent.stopPropagation(ev); L.popup().setLatLng(ev.latlng).setContent(`<b>N. ${esc(x.n)}</b> ${esc(spName(x.sp))}<br>d ${fmt(num(x.d), 0)} cm${x.h ? ' · h ' + fmt(num(x.h), 1) + ' m' : ''}<br>${esc(DEST_S[x.dest] || '')}${x.eta ? ' ' + x.eta : ''}<br><button class="btn sm" onclick="sel.view='elenco';go('elenco');A.editTree('${x.id}')">Modifica</button>`).openOn(M.map); });
-    if (M.map.getZoom() >= 18) m.bindTooltip(String(x.n), {permanent: true, direction: 'right', className: 'adslabel'});
+    m.on('click', ev => { L.DomEvent.stopPropagation(ev); L.popup().setLatLng(ev.latlng).setContent(`<b>${x.segno === 'X' ? 'Contrassegno X' : 'N. ' + esc(x.n)}</b> ${esc(spName(x.sp))}<br>d ${fmt(num(x.d), 0)} cm${x.h ? ' · h ' + fmt(num(x.h), 1) + ' m' : ''}<br>${esc(DEST_S[x.dest] || '')}${x.eta ? ' ' + x.eta : ''}<br><button class="btn sm" onclick="sel.view='elenco';go('elenco');A.editTree('${x.id}')">Modifica</button>`).openOn(M.map); });
+    if (M.map.getZoom() >= 18) m.bindTooltip(nLab(x), {permanent: true, direction: 'right', className: 'adslabel'});
     m.addTo(M.lyrA);
   });
   drawRif();
@@ -2806,9 +2824,9 @@ const R = {
         const st = stats(l, x => x.dest === dest); newPage();
         let y = head(dest === 'T' ? (ced ? 'PIEDILISTA DELLE PIANTE DA ABBATTERE' : 'PIEDILISTA DI MARTELLATA') : dest === 'M' ? (ced ? 'PIEDILISTA DI MATRICINATURA' : 'PIEDILISTA DELLE PIANTE DA RILASCIARE') : 'PIANTE DI CONFINE', dest === 'T' ? 'Piante contrassegnate per il taglio' : dest === 'M' ? (ced ? 'Matricine da rilasciare, numerate e contrassegnate' : 'Riserve e piante da rilasciare') : 'Piante di confine numerate e georeferenziate');
         const byArea = areeOf(l.id).length > 1;
-        const rows = st.rows.map(({x, c}) => dest === 'M' ? [x.n, `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), x.eta || '', c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '', c.v != null ? fmt(c.v, 3) : '', byArea ? areaName(x.areaId) : '', [x.stato && x.stato !== 'V' ? ({S: 'secca', D: 'deperiente', X: 'schiantata'})[x.stato] : '', x.note].filter(Boolean).join(' ')]
-          : dest === 'R' ? [x.n, `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), x.lat ? (+x.lat).toFixed(6) : '', x.lon ? (+x.lon).toFixed(6) : '', areaName(x.areaId), x.note || '']
-          : [x.n, `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '', c.v != null ? fmt(c.v, 3) : '', byArea ? areaName(x.areaId) : '', [x.stato && x.stato !== 'V' ? ({S: 'secca', D: 'deperiente', X: 'schiantata'})[x.stato] : '', x.note].filter(Boolean).join(' ')]);
+        const rows = st.rows.map(({x, c}) => dest === 'M' ? [nLab(x), `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), x.eta || '', c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '', c.v != null ? fmt(c.v, 3) : '', byArea ? areaName(x.areaId) : '', [x.stato && x.stato !== 'V' ? ({S: 'secca', D: 'deperiente', X: 'schiantata'})[x.stato] : '', x.note].filter(Boolean).join(' ')]
+          : dest === 'R' ? [nLab(x), `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), x.lat ? (+x.lat).toFixed(6) : '', x.lon ? (+x.lon).toFixed(6) : '', areaName(x.areaId), x.note || '']
+          : [nLab(x), `${x.sp} ${spName(x.sp)}`, fmt(c.d, 0), c.h != null ? fmt(c.h, 1) + (x.h ? '' : '*') : '', c.v != null ? fmt(c.v, 3) : '', byArea ? areaName(x.areaId) : '', [x.stato && x.stato !== 'V' ? ({S: 'secca', D: 'deperiente', X: 'schiantata'})[x.stato] : '', x.note].filter(Boolean).join(' ')]);
         const hd = dest === 'M' ? ['N.', 'Specie', 'd cm', 'Età', 'h m', 'V m³', byArea ? 'Area' : '', 'Note'] : dest === 'R' ? ['N.', 'Specie', 'd cm', 'Lat', 'Lon', 'Area', 'Note'] : ['N.', 'Specie', 'd cm', 'h m', 'V m³', byArea ? 'Area' : '', 'Note'];
         y = table(y, hd, rows.length ? rows : [['—']], {columnStyles: {0: {halign: 'center', cellWidth: 12}, 1: {halign: 'left'}, [hd.length - 1]: {halign: 'left'}}});
         if (dest === 'R') return sign(y);
@@ -2859,7 +2877,7 @@ const R = {
       const cur = curves(l.id); const add = (name, aoa, w) => { const ws = X.utils.aoa_to_sheet(aoa); if (w) ws['!cols'] = w.map(x => ({wch: x})); X.utils.book_append_sheet(wb, ws, name); };
       add('Lotto', [['Lotto', l.nome || '']].concat(lotInfo(l)).concat([['Norme', regN(l).fonte]]), [24, 60]);
       const pl = dest => [['N.', 'Codice', 'Specie', 'd (cm)', 'h (m)', 'h stimata', 'Volume (m³)', 'Area bas. (m²)', 'Massa (q)', 'Età', 'Stato', 'Area', 'Lat', 'Lon', 'Operatore', 'Note', 'Origine volume']]
-        .concat(pianteOf(l.id).filter(x => x.dest === dest).map(x => { const c = treeCalc(l, x, cur); return [num(x.n), x.sp, spName(x.sp), num(x.d), num(x.h), x.h ? '' : (c.h != null ? Math.round(c.h * 10) / 10 : ''), c.v != null ? Math.round(c.v * 10000) / 10000 : '', Math.round(c.g * 10000) / 10000, c.q != null ? Math.round(c.q * 10) / 10 : '', x.eta || '', x.stato || '', areaName(x.areaId), x.lat ?? '', x.lon ?? '', x.op || '', x.note || '', c.vsrc]; }));
+        .concat(pianteOf(l.id).filter(x => x.dest === dest).map(x => { const c = treeCalc(l, x, cur); return [x.segno === 'X' ? 'X' : num(x.n), x.sp, spName(x.sp), num(x.d), num(x.h), x.h ? '' : (c.h != null ? Math.round(c.h * 10) / 10 : ''), c.v != null ? Math.round(c.v * 10000) / 10000 : '', Math.round(c.g * 10000) / 10000, c.q != null ? Math.round(c.q * 10) / 10 : '', x.eta || '', x.stato || '', areaName(x.areaId), x.lat ?? '', x.lon ?? '', x.op || '', x.note || '', c.vsrc]; }));
       add('Martellata', pl('T'), [6, 7, 20, 7, 7, 8, 10, 10, 8, 5, 5, 14, 11, 11, 14, 20, 30]);
       add('Matricine', pl('M'), [6, 7, 20, 7, 7, 8, 10, 10, 8, 5, 5, 14, 11, 11, 14, 20, 30]);
       if (pianteOf(l.id).some(x => x.dest === 'R')) add('Confine', pl('R'));
@@ -2888,7 +2906,7 @@ const R = {
   csv() {
     const l = lot(); const cur = curves(l.id);
     const rows = [['N', 'Destinazione', 'Specie', 'Nome', 'd_cm', 'h_m', 'h_stimata_m', 'Volume_m3', 'Eta', 'Stato', 'Area', 'Lat', 'Lon', 'Operatore', 'Note']];
-    pianteOf(l.id).forEach(x => { const c = treeCalc(l, x, cur); rows.push([x.n, DEST_S[x.dest] || '', x.sp, spName(x.sp), csvn(num(x.d)), csvn(num(x.h)), x.h ? '' : csvn(c.h), csvn(c.v), x.eta || '', x.stato || '', areaName(x.areaId), x.lat ?? '', x.lon ?? '', x.op || '', x.note || '']); });
+    pianteOf(l.id).forEach(x => { const c = treeCalc(l, x, cur); rows.push([nLab(x), DEST_S[x.dest] || '', x.sp, spName(x.sp), csvn(num(x.d)), csvn(num(x.h)), x.h ? '' : csvn(c.h), csvn(c.v), x.eta || '', x.stato || '', areaName(x.areaId), x.lat ?? '', x.lon ?? '', x.op || '', x.note || '']); });
     const txt = '﻿' + rows.map(r => r.map(v => { v = String(v ?? ''); return /[;"\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(';')).join('\r\n');
     out(fname(l, 'Piedilista', 'csv'), txt, 'text/csv', true);
   }
